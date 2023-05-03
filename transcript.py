@@ -19,7 +19,7 @@ def split_audio_file(input_file_path):
     audio = AudioSegment.from_file(input_file_path)
 
     # Dividi il file audio in frammenti di durata almeno 30 secondi
-    print("Splitting the audio file into 30-second fragments")
+    print("Splitting the audio file into 30-second fragments...")
     min_chunk_length = 30 * 1000 # 30 secondi
     start = 0
     end = min_chunk_length
@@ -45,7 +45,7 @@ def transcribe_audio(audio_path):
     audio_chunk_paths=natsort.natsorted(audio_chunk_paths) # orino in maniera crescente i filename
 
     # Trascrivi i frammenti audio
-    print("Start transcribing the audio")
+    print("Start transcribing the audio...")
     transcriptions = []
     i=0
     error_count = 0
