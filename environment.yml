@@ -1,4 +1,4 @@
-name: trascrittore
+name: transcriptor
 channels:
   - anaconda
   - conda-forge
@@ -84,4 +84,4 @@ dependencies:
     - torch==2.0.0
     - tqdm==4.65.0
     - urllib3==1.26.15
-prefix: C:\Users\simon\anaconda3\envs\trascrittore
+prefix: C:\Users\simon\anaconda3\envs\transcriptor
