@@ -40,7 +40,7 @@ def split_audio_file(input_file_path):
 
     return temp_folder
 
-def initializati_model(model):
+def initializing_model(model):
     """
     This function initializes a Whisper model by loading it onto the CPU.
     
