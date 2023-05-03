@@ -23,7 +23,7 @@ def split_audio_file(input_file_path):
     min_chunk_length = 30 * 1000 # 30 secondi
     start = 0
     end = min_chunk_length
-    while start < len(audio):
+    for _ in tqdm(range(0, len(audio), min_chunk_length)):
         if end > len(audio):
             end = len(audio)
         chunk = audio[start:end]
@@ -85,8 +85,3 @@ def save_text(text, file_name, directory_path=None, extension="txt"):
         file_path = f'transcript_{file_name}.{extension}'
     with open(file_path, 'w') as f:
         f.write(text)
-
-if __name__ == '__main__':
-    file_path=input("File path: ")
-    text,file_name=transcribe_audio(file_path)
-    save_text(text=text,file_name=file_name)
