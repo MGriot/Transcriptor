@@ -34,7 +34,7 @@ def split_audio_file(input_file_path):
     return temp_folder
 
 print("Initializing the Whisper model...")
-model = whisper.load_model("medium", device="cpu") #"base"
+model = whisper.load_model("base", device="cpu") #"medium"
 
 def transcribe_audio(audio_path):
     file_name=os.path.splitext(os.path.basename(audio_path))[0]
