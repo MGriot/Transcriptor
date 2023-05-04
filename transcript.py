@@ -70,7 +70,7 @@ def get_audio_chunk_paths(audio_path: str):
     return audio_chunk_paths, temp_folder
 
 
-def transcribe_audio_chunks(audio_chunk_paths: str, model: str):
+def transcribe_audio_chunks(audio_chunk_paths: str, model: whisper):
     """
     Transcribe a list of audio chunks using the specified model.
 
@@ -85,10 +85,15 @@ def transcribe_audio_chunks(audio_chunk_paths: str, model: str):
         audio_chunk = whisper.load_audio(audio_chunk_path)
         try:
             mel = whisper.log_mel_spectrogram(audio_chunk).to(model.device)
-            _, probs = model.detect_language(mel)
-            options = whisper.DecodingOptions(fp16=False)
-            result = whisper.decode(model, mel, options)
-            transcriptions.append(result.text)
+            try:
+                _, probs = model.detect_language(mel)
+                print(mel)
+                options = whisper.DecodingOptions(fp16=False)
+                result = whisper.decode(model, mel, options)
+                transcriptions.append(result.text)
+            except:
+                result = model.transcribe(audio_chunk, fp16=False)
+                transcriptions.append(result["text"])
         except Exception:
             error_count += 1
             transcriptions.append(
@@ -127,20 +132,20 @@ def transcribe_audio(audio_path: str, whisper_model: str, device: str):
     return text, file_name
 
 
-def save_text(text: str, file_name: str, directory_path: str, extension="txt"):
+def save_text(text: str, fname: str, dir_output: str = None, extension: str = "txt"):
     """
     Save a given text to a file with a specified file name, directory path, and file extension.
 
     :param text: The text to be saved to the file.
-    :param file_name: The name of the file to save the text to.
-    :param directory_path: The path of the directory where the file will be saved. If not specified,
+    :param fname: The name of the file to save the text to.
+    :param dir_output: The path of the directory where the file will be saved. If not specified,
         the file will be saved in the current working directory.
     :param extension: The file extension to use when saving the file. Defaults to "txt".
     """
-    if directory_path:
-        file_path = os.path.join(directory_path, f"transcript_{file_name}.{extension}")
+    if dir_output:
+        file_path = os.path.join(dir_output, f"transcript_{fname}.{extension}")
     else:
-        file_path = f"transcript_{file_name}.{extension}"
+        file_path = f"transcript_{fname}.{extension}"
     with open(file_path, "w") as f:
         f.write(text)
 
