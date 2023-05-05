@@ -9,6 +9,10 @@ import natsort
 # print(tempfile.gettempdir()) dove viene creata la cartella temporanea
 
 
+def obtain_file_name(audio_path):
+    return os.path.splitext(os.path.basename(audio_path))[0]
+
+
 def split_audio_into_chunks(input_file_path: str):
     """
     Split an audio file into chunks of at least 30 seconds in duration.
@@ -45,7 +49,7 @@ def split_audio_into_chunks(input_file_path: str):
     return temp_folder
 
 
-def initializing_model(whisper_model: str, device: str):
+def initializing_model(whisper_model: str, device: str = None):
     """
     Initialize a Whisper model by loading it onto the specified device.
 
@@ -102,34 +106,8 @@ def transcribe_audio_chunks(audio_chunk_paths: str, model: whisper):
     return transcriptions, error_count
 
 
-def transcribe_audio(audio_path: str, whisper_model: str, device: str):
-    """
-    Transcribe an audio file using the specified whisper model and device.
-
-    :param audio_path: Path to the audio file to transcribe.
-    :param whisper_model: Name of the whisper model to use for transcription, can be "base" or "medium", for more models see Whisper repository. Defaults to "base".
-    :param device: Device to use for transcription, can be "cpu" or "cuda". Defaults to "cpu".
-    :return: Tuple containing the transcription and the file name of the audio file.
-    """
-    file_name = os.path.splitext(os.path.basename(audio_path))[0]
-    print(f"File name: {file_name}")
-
-    audio_chunk_paths, temp_folder = get_audio_chunk_paths(audio_path)
-    model = initializing_model(whisper_model, device)
-
-    print("Start transcribing the audio...")
-
-    transcriptions, error_count = transcribe_audio_chunks(audio_chunk_paths, model)
-
-    print("Combining the transcription into a single string")
-    text = "".join(transcriptions)
-
-    print("Deleting the temporary folder")
-    shutil.rmtree(temp_folder)
-
-    print(f"Number of errors: {error_count}")
-
-    return text, file_name
+def combine_text(transcriptions: str):
+    return "".join(transcriptions)
 
 
 def save_text(text: str, fname: str, dir_output: str = None, extension: str = "txt"):
@@ -150,6 +128,56 @@ def save_text(text: str, fname: str, dir_output: str = None, extension: str = "t
         f.write(text)
 
 
+def transcribe_audio(audio_path: str, whisper_model: str, device: str = None):
+    """
+    Transcribe an audio file using the specified whisper model and device.
+
+    :param audio_path: Path to the audio file to transcribe.
+    :param whisper_model: Name of the whisper model to use for transcription, can be "base" or "medium", for more models see Whisper repository. Defaults to "base".
+    :param device: Device to use for transcription, can be "cpu" or "cuda". device = "cuda" if torch.cuda.is_available() else "cpu"
+    :return: Tuple containing the transcription and the file name of the audio file.
+    """
+    file_name = obtain_file_name(audio_path)
+    print(f"File name: {file_name}")
+
+    audio_chunk_paths, temp_folder = get_audio_chunk_paths(audio_path)
+    model = initializing_model(whisper_model, device)
+
+    print("Start transcribing the audio...")
+
+    transcriptions, error_count = transcribe_audio_chunks(audio_chunk_paths, model)
+
+    print("Combining the transcription into a single string")
+    text = combine_text(transcriptions)
+
+    print("Deleting the temporary folder")
+    shutil.rmtree(temp_folder)
+
+    print(f"Number of errors: {error_count}")
+
+    return text, file_name
+
+
+def transcriptor(
+    audio_path: str,
+    whisper_model: str,
+    device: str = None,
+    save_transcription: bool = True,
+    dir_output: str = None,
+    extension: str = "txt",
+):
+    text, file_name = transcribe_audio(audio_path, whisper_model, device)
+    if save_transcription:
+        save_text(
+            text,
+            file_name,
+            dir_output,
+            extension,
+        )
+    return text
+
+
+# TODO: crea una classe che sfrutti queste funzioni
 # This code block is the main entry point of the script. It prompts the user to input the path of the
 # audio file that needs to be transcribed and the pre-trained model to use for transcription (either
 # "base" or "medium"). It then calls the `transcribe_audio` function with the provided input
