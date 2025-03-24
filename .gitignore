@@ -2,6 +2,10 @@
 audio/
 audio/*
 
+# Old files
+old/
+old/*
+
 # Python
 __pycache__/
 *.py[cod]
