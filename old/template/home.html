@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+
+<head>
+    <title>Home</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.7.0/dropzone.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.7.0/dropzone.js"></script>
+    <style>
+        .left-panel {
+            width: 33%;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="left-panel">
+        <form action="/" method="post" class="dropzone" id="myDropzone" enctype="multipart/form-data">
+            <div class="dz-message" data-dz-message><span>Trascina i file qui per caricarli o seleziona i file cliccando
+                    qui</span></div>
+        </form>
+        <button type="button" id="transcribeButton">Transcrivi</button>
+        <!-- Qui puoi aggiungere ulteriori opzioni per l'utente -->
+    </div>
+    <div class="right-panel">
+        <!-- Qui verrà visualizzata la trascrizione -->
+        <progress id="progressBar" value="0" max="100"></progress> <!-- Barra di avanzamento -->
+    </div>
+
+    <script>
+        Dropzone.options.myDropzone = {
+            paramName: "file", // Nome del parametro inviato al server
+            //maxFilesize: 10, // Dimensione massima del file in MB
+            parallelUploads: 1, // Numero di file caricati contemporaneamente
+            //acceptedFiles: ".wav,.mp3", // Tipi di file accettati
+            autoProcessQueue: true, // Avvia automaticamente il caricamento dei file
+        };
+
+
+        // Quando l'utente fa clic sul pulsante "Transcrivi", avvia il caricamento dei file
+        document.querySelector("#transcribeButton").addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            myDropzone.processQueue();
+        });
+
+        // Crea una connessione WebSocket
+        var socket = new WebSocket("ws://localhost:5000/progress");
+
+        // Aggiorna la barra di avanzamento quando ricevi un messaggio dal server
+        socket.onmessage = function (event) {
+            document.getElementById("progressBar").value = parseInt(event.data);
+        };
+    </script>
+</body>
+
+</html>
