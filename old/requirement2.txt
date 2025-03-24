@@ -1,4 +1,0 @@
-whisper-timestamped
-torch
-soundfile
-pyannote.audio
