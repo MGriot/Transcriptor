@@ -1,7 +1,0 @@
-Detected Language: EN
-Audio File: test
-Speaker 1 [0.03 - 10.00]:  Anyway, look where we're digressing the rules.  Oh, simple, Emma, you're about to face five questions  of increasing difficulty.  You must answer as quickly as possible.  If you get it correct, you move onto the next round.  Do you know what happens if you get it wrong?
-Speaker 2 [11.42 - 12.82]:  and correction and embarrassment.
-Speaker 1 [12.82 - 14.91]:  Do indeed round one. Round 1 astronomers are saying that Saturn's rings are slowly disappearing.  They estimate we only have a few hundred million years left of them.
-Speaker 2 [25.58 - 27.37]:  I'll earn you a few hundred million.
-Speaker 1 [27.37 - 28.97]:  But what I want to know?
