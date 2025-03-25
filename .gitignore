@@ -1,10 +1,8 @@
 # Audio directory
 audio/
 audio/*
-
-# Old files
-old/
-old/*
+output/*
+output/
 
 # Python
 __pycache__/

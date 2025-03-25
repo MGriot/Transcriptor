@@ -221,11 +221,9 @@ class AudioTranscriber:
         detected_language = None
         for chunk in chunks:
             logging.info(f"Transcribing {chunk['file_path']}")
-            vad_option = None
-            if use_vad:
-                vad_option = (
-                    vad_method if vad_method else True
-                )  # Use default if no method specified
+            vad_option = (
+                vad_method if use_vad else None
+            )  # Use default if no method specified
             transcription, lang = self.transcribe_chunk(
                 chunk["file_path"],
                 language=language,
@@ -265,9 +263,7 @@ class AudioTranscriber:
     ) -> Tuple[Dict, Optional[str]]:
         """Transcribes the entire audio file without diarization."""
         logging.info(f"Transcribing the entire audio file: {self.audio_file}")
-        vad_option = None
-        if use_vad:
-            vad_option = vad_method if vad_method else True
+        vad_option = vad_method if use_vad else None
         return self.transcribe_chunk(
             self.audio_file,
             language=language,
@@ -486,7 +482,6 @@ def process_single_audio(
     )
 
 
-
 def main():
     """Main function to parse arguments and process audio."""
     parser = argparse.ArgumentParser(
@@ -592,11 +587,6 @@ def main():
 
     if len(sys.argv) == 1:
         # Interactive mode
-        output_dir_base = (
-            input("Enter the main output directory (default: output): ").strip()
-            or "output"
-        )
-
         # Load HF_TOKEN if config.py exists
         hf_token = None
         try:
@@ -612,6 +602,10 @@ def main():
         audio_input = input(
             "Enter the path to an audio file or a directory containing audio files: "
         ).strip()
+        output_dir_base = (
+            input("Enter the main output directory (default: output): ").strip()
+            or "output"
+        )
 
         if os.path.isdir(audio_input):
             audio_files = [
@@ -629,8 +623,7 @@ def main():
                 selection = (
                     input(
                         "\nChoose files to process (e.g., 'all', '1', '2,3,4', '1-3'): "
-                    )
-.lower()
+                    ).lower()
                     .strip()
                 )
                 files_to_process = []
@@ -881,6 +874,9 @@ def main():
     else:
         # Command-line mode
         args = parser.parse_args()
+        # Add validation for VAD arguments
+        if args.use_vad and not args.vad_method:
+            parser.error("--vad_method is required when --use_vad is specified.")
         audio_input = args.audio_input
         output_dir_base = args.output_dir
         hf_token = args.hf_token
@@ -895,6 +891,7 @@ def main():
         plot_word_alignment = args.plot_word_alignment
         detect_disfluencies = args.detect_disfluencies
         no_rename_speakers = args.no_rename_speakers
+
 
         if os.path.isdir(audio_input):
             audio_files = [
@@ -940,7 +937,6 @@ def main():
             )
         else:
             print("Invalid input. Please provide a valid audio file or directory.")
-
 
 
 if __name__ == "__main__":
