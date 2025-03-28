@@ -3,6 +3,8 @@ audio/
 audio/*
 output/*
 output/
+logs/*
+logs/
 
 # Python
 __pycache__/

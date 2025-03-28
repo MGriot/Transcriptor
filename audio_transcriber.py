@@ -9,6 +9,10 @@ import json
 from pydub import AudioSegment
 import whisper_timestamped as whisper
 import concurrent.futures
+import tqdm
+import traceback
+from exceptions import *
+import sys
 
 # Constants for default values
 DEFAULT_OUTPUT_DIR = "output"
@@ -16,6 +20,34 @@ AUDIO_FILE_EXTENSIONS = (".wav", ".mp3", ".ogg", ".flac", ".aac")
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
 VAD_METHODS = ["silero", "silero:3.1", "auditok"]
 DEFAULT_NUM_PROCESSES = 1
+
+
+def _process_chunk(args):
+    """Helper function to process a single chunk (for multiprocessing)."""
+    chunk, language, vad_option, verbose, plot_word_alignment, detect_disfluencies = (
+        args
+    )
+    logging.info(f"Transcribing {chunk['file_path']}")
+
+    try:
+        audio_dir = os.path.dirname(os.path.dirname(chunk["file_path"]))
+        transcriber = AudioTranscriber(chunk["file_path"], output_dir=audio_dir)
+        transcription, lang = transcriber.transcribe_chunk(
+            chunk["file_path"],
+            language=language,
+            vad=vad_option,
+            verbose=verbose,
+            plot_word_alignment=plot_word_alignment,
+            detect_disfluencies=detect_disfluencies,
+        )
+        return (
+            {**chunk, "transcription": transcription, "language": lang}
+            if transcription
+            else None
+        )
+    except Exception as e:
+        logging.error(f"Error processing chunk {chunk['file_path']}: {e}")
+        return None
 
 
 class AudioTranscriber:
@@ -28,65 +60,94 @@ class AudioTranscriber:
         whisper_model: str = "base",
     ):
         self.audio_file = audio_file
-        self.audio_base_name = os.path.splitext(os.path.basename(self.audio_file))[0]
+        self.audio_base_name = os.path.splitext(os.path.basename(audio_file))[0]
         self.output_dir_base = output_dir
-        self.output_dir = os.path.join(self.output_dir_base, self.audio_base_name)
-        self.chunks_dir = os.path.join(
-            self.output_dir_base, self.audio_base_name, "chunks"
-        )
+        self.output_dir = os.path.join(output_dir, self.audio_base_name)
+        self.chunks_dir = os.path.join(self.output_dir, "chunks")
         self.hf_token = hf_token
         self.whisper_model = whisper_model
-        self.debug_mode = False
         self.skip_diarization = skip_diarization
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-        )
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-        if not os.path.exists(self.chunks_dir):
-            os.makedirs(self.chunks_dir)
+        self._init_directories()
+
+    def _init_directories(self):
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def load_audio(self, audio_file_path: str) -> Tuple[torch.Tensor, int]:
         """Loads an audio file using torchaudio."""
         try:
+            if not os.path.exists(audio_file_path):
+                raise AudioFileError(f"Audio file not found: {audio_file_path}")
+
+            extension = os.path.splitext(audio_file_path)[1].lower()
+            if extension not in AUDIO_FILE_EXTENSIONS:
+                raise AudioFileError(f"Unsupported audio format: {extension}")
+
             waveform, sample_rate = torchaudio.load(audio_file_path)
             return waveform, sample_rate
         except Exception as e:
-            logging.error(f"Error loading audio file: {e}")
-            raise
+            logging.error(f"Error loading audio: {str(e)}\n{traceback.format_exc()}")
+            raise AudioFileError(f"Failed to load audio: {str(e)}")
 
     def run_diarization(
-        self,
-        max_speakers: Optional[int] = None,
-        min_speakers: Optional[int] = None,
+        self, max_speakers: Optional[int] = None, min_speakers: Optional[int] = None
     ) -> Tuple[Pipeline, Annotation, Dict[str, str]]:
         """Performs speaker diarization."""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logging.info(f"Using device: {device}")
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token
-        ).to(device)
-        waveform, sample_rate = self.load_audio(self.audio_file)
-        input_data = {"waveform": waveform, "sample_rate": sample_rate}
-        if max_speakers:
-            input_data["max_speakers"] = max_speakers
-        if min_speakers:
-            input_data["min_speakers"] = min_speakers
-        diarization = pipeline(input_data)
-        speaker_labels = set()
-        for segment, _, label in diarization.itertracks(yield_label=True):
-            speaker_labels.add(label)
-        speaker_names = {
-            label: f"Speaker {i + 1}" for i, label in enumerate(sorted(speaker_labels))
-        }
-        return pipeline, diarization, speaker_names
+        try:
+            if not self.hf_token:
+                raise TokenError("HuggingFace token required for diarization")
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1", use_auth_token=self.hf_token
+            ).to(device)
+
+            waveform, sample_rate = self.load_audio(self.audio_file)
+            diarization = pipeline(
+                {
+                    "waveform": waveform,
+                    "sample_rate": sample_rate,
+                    **({"max_speakers": max_speakers} if max_speakers else {}),
+                    **({"min_speakers": min_speakers} if min_speakers else {}),
+                }
+            )
+
+            speaker_labels = {
+                label for _, _, label in diarization.itertracks(yield_label=True)
+            }
+            speaker_names = {
+                label: f"Speaker {i+1}"
+                for i, label in enumerate(sorted(speaker_labels))
+            }
+            return pipeline, diarization, speaker_names
+        except Exception as e:
+            logging.error(f"Diarization error: {str(e)}\n{traceback.format_exc()}")
+            raise DiarizationError(f"Diarization failed: {str(e)}")
 
     def chunk_audio(self, diarization: Annotation) -> List[Dict]:
         """Chunks audio based on diarization."""
+        if not os.path.exists(self.chunks_dir):
+            os.makedirs(self.chunks_dir, exist_ok=True)
+
+        for old_file in os.listdir(self.chunks_dir):
+            if old_file.startswith("chunk_") and old_file.endswith(".mp3"):
+                try:
+                    os.remove(os.path.join(self.chunks_dir, old_file))
+                except OSError:
+                    pass
+
         audio = AudioSegment.from_file(self.audio_file)
         chunks = []
+        total_chunks = sum(1 for _ in diarization.itertracks(yield_label=True))
+
+        print("\nSplitting audio into chunks:")
         for i, (turn, _, speaker) in enumerate(
-            diarization.itertracks(yield_label=True), 1
+            tqdm.tqdm(
+                diarization.itertracks(yield_label=True),
+                total=total_chunks,
+                desc="Chunking",
+                unit="segment",
+            ),
+            1,
         ):
             start_ms, end_ms = int(turn.start * 1000), int(turn.end * 1000)
             chunk_path = os.path.join(self.chunks_dir, f"chunk_{i}.mp3")
@@ -105,104 +166,28 @@ class AudioTranscriber:
         self,
         audio_file_path: str,
         language: Optional[str] = None,
-        vad: Optional[bool or str or List[Tuple[float, float]]] = None,
+        vad: Optional[bool or str] = None,
         verbose: bool = False,
         plot_word_alignment: bool = False,
         detect_disfluencies: bool = False,
     ) -> Tuple[Dict, Optional[str]]:
-        """Transcribes an audio chunk and returns the transcription and detected language."""
+        """Transcribes an audio chunk."""
         try:
             model = whisper.load_model(self.whisper_model)
             audio = whisper.load_audio(audio_file_path)
-
-            if vad is not None and vad is not False:
-                logging.info(
-                    f"Performing voice activity detection with settings: {vad}"
-                )
-                if vad is True or vad == "silero":
-                    result = whisper.transcribe(
-                        model,
-                        audio,
-                        language=language,
-                        vad="silero",
-                        verbose=verbose,
-                        plot_word_alignment=plot_word_alignment,
-                        detect_disfluencies=detect_disfluencies,
-                    )
-                elif vad == "silero:3.1":
-                    result = whisper.transcribe(
-                        model,
-                        audio,
-                        language=language,
-                        vad="silero:3.1",
-                        verbose=verbose,
-                        plot_word_alignment=plot_word_alignment,
-                        detect_disfluencies=detect_disfluencies,
-                    )
-                elif vad == "auditok":
-                    result = whisper.transcribe(
-                        model,
-                        audio,
-                        language=language,
-                        vad="auditok",
-                        verbose=verbose,
-                        plot_word_alignment=plot_word_alignment,
-                        detect_disfluencies=detect_disfluencies,
-                    )
-                elif isinstance(vad, list):
-                    speech_segments = []
-                    for start, end in vad:
-                        speech_segments.append(
-                            audio[
-                                int(start * whisper.audio.SAMPLE_RATE) : int(
-                                    end * whisper.audio.SAMPLE_RATE
-                                )
-                            ]
-                        )
-                    if speech_segments:
-                        full_transcription = {"segments": []}
-                        for segment in speech_segments:
-                            segment_result = whisper.transcribe(
-                                model,
-                                segment,
-                                language=language,
-                                verbose=verbose,
-                                plot_word_alignment=plot_word_alignment,
-                                detect_disfluencies=detect_disfluencies,
-                            )
-                            full_transcription["segments"].extend(
-                                segment_result.get(
-                                    "segments",
-                                )
-                            )
-                        result = full_transcription
-                else:
-                    logging.warning(
-                        f"Invalid VAD setting: {vad}. Transcribing without VAD."
-                    )
-                    result = whisper.transcribe(
-                        model,
-                        audio,
-                        language=language,
-                        verbose=verbose,
-                        plot_word_alignment=plot_word_alignment,
-                        detect_disfluencies=detect_disfluencies,
-                    )
-            else:
-                result = whisper.transcribe(
-                    model,
-                    audio,
-                    language=language,
-                    verbose=verbose,
-                    plot_word_alignment=plot_word_alignment,
-                    detect_disfluencies=detect_disfluencies,
-                )
-
-            detected_language = result.get("language") if language is None else language
-            return result, detected_language
+            result = whisper.transcribe(
+                model,
+                audio,
+                language=language,
+                vad=vad if vad else None,
+                verbose=verbose,
+                plot_word_alignment=plot_word_alignment,
+                detect_disfluencies=detect_disfluencies,
+            )
+            return result, result.get("language") if language is None else language
         except Exception as e:
-            logging.error(f"Transcription error: {e}")
-            return {}, None
+            logging.error(f"Transcription error: {str(e)}\n{traceback.format_exc()}")
+            raise TranscriptionError(f"Chunk transcription failed: {str(e)}")
 
     def process_and_transcribe_chunks(
         self,
@@ -213,150 +198,51 @@ class AudioTranscriber:
         verbose: bool = False,
         plot_word_alignment: bool = False,
         detect_disfluencies: bool = False,
-        num_processes: int = 1,  # Added num_processes
-    ) -> List[Dict]:
-        """Processes and saves transcriptions for individual chunks, using multiprocessing."""
+        num_processes: int = 1,
+    ) -> Tuple[List[Dict], Optional[str]]:
+        """Processes and saves transcriptions for individual chunks."""
         transcriptions = []
         detected_language = None
+        vad_option = vad_method if use_vad else None
 
-        def process_chunk(chunk):
-            nonlocal detected_language
-            logging.info(f"Transcribing {chunk['file_path']}")
-            vad_option = vad_method if use_vad else None
-            transcription, lang = self.transcribe_chunk(
-                chunk["file_path"],
-                language=language,
-                vad=vad_option,
-                verbose=verbose,
-                plot_word_alignment=plot_word_alignment,
-                detect_disfluencies=detect_disfluencies,
+        chunk_args = [
+            (
+                chunk,
+                language,
+                vad_option,
+                verbose,
+                plot_word_alignment,
+                detect_disfluencies,
             )
-            if transcription:
-                if detected_language is None and lang is not None:
-                    detected_language = lang
-                result = {**chunk, "transcription": transcription, "language": lang}
-                if self.debug_mode:
-                    print(f"Transcription for {chunk['file_path']} (Language: {lang}):")
-                    for segment in transcription["segments"]:
-                        print(
-                            f"    [{segment['start']:.2f} - {segment['end']:.2f}] {segment['text']}"
-                        )
-                return result
-            return None
+            for chunk in chunks
+        ]
 
-        if num_processes > 1:
-            with concurrent.futures.ProcessPoolExecutor(
-                max_workers=num_processes
-            ) as executor:
-                futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()
-                    if result:
-                        transcriptions.append(result)
-        else:
-            for chunk in chunks:
-                result = process_chunk(chunk)
-                if result:
-                    transcriptions.append(result)
+        print(f"\nProcessing {len(chunks)} audio chunks:")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_processes
+        ) as executor:
+            results = list(
+                tqdm.tqdm(
+                    executor.map(_process_chunk, chunk_args),
+                    total=len(chunk_args),
+                    desc="Transcribing",
+                    unit="chunk",
+                )
+            )
+
+        for result in results:
+            if result:
+                transcriptions.append(result)
+                if detected_language is None and result.get("language"):
+                    detected_language = result["language"]
 
         transcriptions_json_path = os.path.join(
             self.output_dir, f"{self.audio_base_name}_transcriptions.json"
         )
         with open(transcriptions_json_path, "w") as f:
             json.dump(transcriptions, f, indent=4)
+
         return transcriptions, detected_language
-
-    def transcribe_whole_audio(
-        self,
-        language: Optional[str] = None,
-        use_vad: bool = False,
-        vad_method: Optional[str] = None,
-        verbose: bool = False,
-        plot_word_alignment: bool = False,
-        detect_disfluencies: bool = False,
-    ) -> Tuple[Dict, Optional[str]]:
-        """Transcribes the entire audio file without diarization."""
-        logging.info(f"Transcribing the entire audio file: {self.audio_file}")
-        vad_option = vad_method if use_vad else None
-        return self.transcribe_chunk(
-            self.audio_file,
-            language=language,
-            vad=vad_option,
-            verbose=verbose,
-            plot_word_alignment=plot_word_alignment,
-            detect_disfluencies=detect_disfluencies,
-        )
-
-    def clean_transcription(
-        self, transcriptions_json: str, speaker_names: Dict[str, str]
-    ) -> List[str]:
-        """Cleans the transcription JSON to a readable format (for diarized audio)."""
-        with open(transcriptions_json, "r") as f:
-            transcriptions = json.load(f)
-
-        cleaned = []
-        detected_language = (
-            transcriptions[0].get("language") if transcriptions else None
-        )
-        if detected_language:
-            cleaned.append(f"Detected Language: {detected_language.upper()}")
-            cleaned.append("")
-        cleaned.append(f"Audio File: {self.audio_base_name}")
-        cleaned.append("")
-
-        current_speaker, current_text, current_start, current_end = None, "", None, None
-        for i, chunk in enumerate(transcriptions):
-            if current_speaker != chunk["speaker"]:
-                if current_speaker is not None:
-                    cleaned.append(
-                        f"{speaker_names.get(current_speaker, current_speaker)} [{current_start:.2f} - {current_end:.2f}]: {current_text}"
-                    )
-                current_speaker, current_text = chunk["speaker"], ""
-                current_start, current_end = chunk["start_time"], chunk["end_time"]
-                if (
-                    i > 0
-                    and transcriptions[i]["speaker"] != transcriptions[i - 1]["speaker"]
-                ):
-                    cleaned.append("")
-            if chunk["transcription"] and chunk["transcription"]["segments"]:
-                current_text += " ".join(
-                    seg["text"] for seg in chunk["transcription"]["segments"]
-                )
-        if current_speaker:
-            cleaned.append(
-                f"{speaker_names.get(current_speaker, current_speaker)} [{current_start:.2f} - {current_end:.2f}]: {current_text}"
-            )
-        return [line for line in cleaned if line.strip() != ""]
-
-    def clean_whole_transcription(
-        self, whole_transcription: Dict, language: Optional[str] = None
-    ) -> List[str]:
-        """Cleans the whole transcription output to a readable format (without diarization)."""
-        cleaned = []
-        detected_language = (
-            whole_transcription.get("language") if whole_transcription else language
-        )
-        if detected_language:
-            cleaned.append(f"Detected Language: {detected_language.upper()}")
-            cleaned.append("")
-        cleaned.append(f"Audio File: {self.audio_base_name}")
-        cleaned.append("")
-        if whole_transcription and whole_transcription.get("segments"):
-            for segment in whole_transcription["segments"]:
-                cleaned.append(
-                    f"[{segment['start']:.2f} - {segment['end']:.2f}] {segment['text']}"
-                )
-        return cleaned
-
-    def save_transcription_to_file(
-        self, cleaned_transcriptions: List[str], filename="transcription.txt"
-    ):
-        """Saves the cleaned transcription to a text file."""
-        output_file = os.path.join(
-            self.output_dir, f"{self.audio_base_name}_{filename}"
-        )
-        with open(output_file, "w") as f:
-            f.write("\n".join(cleaned_transcriptions))
 
     def process_audio(
         self,
@@ -368,72 +254,30 @@ class AudioTranscriber:
         verbose: bool = False,
         plot_word_alignment: bool = False,
         detect_disfluencies: bool = False,
-        no_rename_speakers: bool = False,
-        num_processes: int = 1,  # Added num_processes parameter
+        num_processes: int = 1,
+        no_rename_speakers: bool = False,  # Added parameter
     ):
         """Orchestrates the audio processing pipeline."""
         try:
             if self.skip_diarization:
-                print("Skipping diarization and transcribing the whole audio file.")
-                whole_transcription, detected_language = self.transcribe_whole_audio(
+                print("Transcribing whole audio file...")
+                whole_transcription, detected_language = self.transcribe_chunk(
+                    self.audio_file,
                     language=language,
-                    use_vad=use_vad,
-                    vad_method=vad_method,
+                    vad=vad_method if use_vad else None,
                     verbose=verbose,
                     plot_word_alignment=plot_word_alignment,
                     detect_disfluencies=detect_disfluencies,
                 )
-                if whole_transcription:
-                    cleaned_transcriptions = self.clean_whole_transcription(
-                        whole_transcription, detected_language
-                    )
-                    print("\nTranscription:")
-                    for line in cleaned_transcriptions:
-                        print(line)
-                    self.save_transcription_to_file(
-                        cleaned_transcriptions, filename="whole_transcription.txt"
-                    )
-                else:
-                    print("Transcription failed.")
+                self._save_whole_transcription(whole_transcription, detected_language)
             else:
-                pipeline, diarization_result, speaker_names = self.run_diarization(
-                    max_speakers=max_speakers, min_speakers=min_speakers
+                _, diarization_result, speaker_names = self.run_diarization(
+                    max_speakers, min_speakers
                 )
+                self._save_speaker_names(speaker_names)
+
                 chunk_info_list = self.chunk_audio(diarization_result)
-                print("Audio file diarized and chunked.")
-
-                num_speakers = len(speaker_names)
-                print(f"\nDetected {num_speakers} speakers:")
-                for i, (turn, _, speaker) in enumerate(
-                    diarization_result.itertracks(yield_label=True), 1
-                ):
-                    print(
-                        f"Chunk {i}: Speaker '{speaker}' [{turn.start:.2f} - {turn.end:.2f}]"
-                    )
-
-                if not no_rename_speakers:
-                    new_speaker_names = {}
-                    for label in sorted(speaker_names.keys()):
-                        new_name = input(
-                            f"Enter a new name for '{speaker_names[label]}' (default: {speaker_names[label]}): "
-                        ).strip()
-                        if new_name:
-                            new_speaker_names[label] = new_name
-                        else:
-                            new_speaker_names[label] = speaker_names[label]
-                    speaker_names.update(new_speaker_names)
-
-                    speaker_names_path = os.path.join(
-                        self.output_dir, f"{self.audio_base_name}_speaker_names.json"
-                    )
-                    with open(speaker_names_path, "w") as f:
-                        json.dump(speaker_names, f, indent=4)
-                    print(f"Speaker names saved to {speaker_names_path}")
-
-                (
-                    transcriptions,
-                    detected_language,
-                ) = self.process_and_transcribe_chunks(
+                transcriptions, detected_language = self.process_and_transcribe_chunks(
                     chunk_info_list,
                     language=language,
                     use_vad=use_vad,
@@ -441,22 +285,178 @@ class AudioTranscriber:
                     verbose=verbose,
                     plot_word_alignment=plot_word_alignment,
                     detect_disfluencies=detect_disfluencies,
-                    num_processes=num_processes,  # Pass num_processes
+                    num_processes=num_processes,
                 )
-                transcriptions_json_path = os.path.join(
-                    self.output_dir, f"{self.audio_base_name}_transcriptions.json"
-                )
-                cleaned_transcriptions = self.clean_transcription(
-                    transcriptions_json_path, speaker_names
-                )
-                print("Cleaned Transcriptions:")
-                for paragraph in cleaned_transcriptions:
-                    print(paragraph)
-
-                self.save_transcription_to_file(
-                    cleaned_transcriptions, filename="diarized_transcription.txt"
-                )
+                self._save_diarized_transcription(transcriptions, speaker_names)
 
         except Exception as e:
-            logging.error(f"An error occurred: {e}")
-            print(f"An error occurred: {e}")
+            logging.error(f"Processing error: {str(e)}\n{traceback.format_exc()}")
+            if os.path.exists(self.chunks_dir):
+                try:
+                    for f in os.listdir(self.chunks_dir):
+                        os.remove(os.path.join(self.chunks_dir, f))
+                    os.rmdir(self.chunks_dir)
+                except OSError:
+                    pass
+            raise TranscriptionError(f"Audio processing failed: {str(e)}")
+
+    def _save_speaker_names(self, speaker_names: Dict[str, str]):
+        """Save speaker names to JSON file."""
+        speaker_names_path = os.path.join(
+            self.output_dir, f"{self.audio_base_name}_speaker_names.json"
+        )
+        with open(speaker_names_path, "w") as f:
+            json.dump(speaker_names, f, indent=4)
+        print(f"Speaker names saved to {speaker_names_path}")
+
+    def _save_whole_transcription(self, transcription: Dict, language: Optional[str]):
+        """Save whole audio transcription."""
+        cleaned = self._clean_whole_transcription(transcription, language)
+        self._save_output_file(cleaned, "whole_transcription.txt")
+
+    def _save_diarized_transcription(
+        self, transcriptions: List[Dict], speaker_names: Dict[str, str]
+    ):
+        """Save diarized transcription."""
+        cleaned = self._clean_diarized_transcription(transcriptions, speaker_names)
+        self._save_output_file(cleaned, "diarized_transcription.txt")
+
+    def _clean_whole_transcription(
+        self, transcription: Dict, language: Optional[str]
+    ) -> List[str]:
+        """Clean whole audio transcription."""
+        cleaned = []
+        if language := (transcription.get("language") or language):
+            cleaned.extend([f"Detected Language: {language.upper()}", ""])
+        cleaned.extend([f"Audio File: {self.audio_base_name}", ""])
+        cleaned.extend(
+            f"[{seg['start']:.2f} - {seg['end']:.2f}] {seg['text']}"
+            for seg in transcription.get("segments", [])
+        )
+        return cleaned
+
+    def _clean_diarized_transcription(
+        self, transcriptions: List[Dict], speaker_names: Dict[str, str]
+    ) -> List[str]:
+        """Clean diarized transcription with timestamps."""
+        cleaned = []
+        if transcriptions:
+            if lang := transcriptions[0].get("language"):
+                cleaned.extend([f"Detected Language: {lang.upper()}", ""])
+        cleaned.extend([f"Audio File: {self.audio_base_name}", ""])
+
+        for chunk in transcriptions:
+            speaker_label = chunk["speaker"]
+            speaker_name = speaker_names.get(speaker_label, speaker_label)
+            start = chunk["start_time"]
+            end = chunk["end_time"]
+
+            chunk_text = " ".join(
+                seg["text"] for seg in chunk["transcription"].get("segments", [])
+            ).strip()
+
+            if chunk_text:
+                cleaned.append(
+                    f"{speaker_name} [{start:.2f} - {end:.2f}]: {chunk_text}"
+                )
+
+        return cleaned
+
+    def _save_output_file(self, content: List[str], filename: str):
+        """Save output to text file."""
+        output_path = os.path.join(
+            self.output_dir, f"{self.audio_base_name}_{filename}"
+        )
+        with open(output_path, "w") as f:
+            f.write("\n".join(content))
+        print(f"Transcription saved to {output_path}")
+
+
+class SpeakerRenamer:
+    def __init__(self, audio_base_name: str, output_dir: str = DEFAULT_OUTPUT_DIR):
+        self.audio_base_name = audio_base_name
+        self.output_dir = output_dir  # Use the exact output directory path
+        self.speaker_names_path = os.path.join(
+            output_dir, f"{audio_base_name}_speaker_names.json"
+        )
+        self.transcriptions_path = os.path.join(
+            output_dir, f"{audio_base_name}_transcriptions.json"
+        )
+        self.speaker_names = self._load_speaker_names()
+
+    def _load_speaker_names(self) -> Dict[str, str]:
+        """Load existing speaker names from JSON file"""
+        if os.path.exists(self.speaker_names_path):
+            with open(self.speaker_names_path, "r") as f:
+                return json.load(f)
+        return {}
+
+    def rename_speakers_interactive(self):
+        """Interactive speaker renaming process"""
+        print("\nCurrent speaker names:")
+        for label, name in self.speaker_names.items():
+            print(f"{label}: {name}")
+
+        if sys.stdin.isatty():
+            try:
+                new_names = {}
+                for label, current_name in self.speaker_names.items():
+                    new_name = input(
+                        f"\nEnter new name for {current_name} ({label}) [Enter to keep]: "
+                    ).strip()
+                    new_names[label] = new_name or current_name
+                self.speaker_names = new_names
+                self._save_speaker_names()
+            except EOFError:
+                print("\nNon-interactive mode detected, keeping names")
+        else:
+            print("Non-interactive mode, keeping existing names")
+        return self.speaker_names
+
+    def generate_updated_transcriptions(self):
+        """Generate new transcriptions with updated speaker names and timestamps."""
+        with open(self.transcriptions_path, "r") as f:
+            transcriptions = json.load(f)
+
+        # Create cleaned text version with timestamps
+        cleaned = []
+        for chunk in transcriptions:
+            speaker_label = chunk["speaker"]
+            speaker_name = self.speaker_names.get(speaker_label, speaker_label)
+            start = chunk["start_time"]
+            end = chunk["end_time"]
+
+            chunk_text = " ".join(
+                seg["text"] for seg in chunk["transcription"].get("segments", [])
+            ).strip()
+
+            if chunk_text:
+                cleaned.append(
+                    f"{speaker_name} [{start:.2f} - {end:.2f}]: {chunk_text}"
+                )
+
+        # Save updated files
+        updated_json_path = os.path.join(
+            self.output_dir, f"{self.audio_base_name}_transcriptions_renamed.json"
+        )
+        with open(updated_json_path, "w") as f:
+            json.dump(transcriptions, f, indent=4)
+
+        txt_path = os.path.join(
+            self.output_dir, f"{self.audio_base_name}_transcription_renamed.txt"
+        )
+        with open(txt_path, "w") as f:
+            f.write("\n".join(cleaned))
+
+        return updated_json_path, txt_path
+
+    def _save_speaker_names(self):
+        """Save current speaker names to JSON file"""
+        try:
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(self.speaker_names_path), exist_ok=True)
+            with open(self.speaker_names_path, "w") as f:
+                json.dump(self.speaker_names, f, indent=4)
+        except Exception as e:
+            logging.error(f"Error saving speaker names: {e}")
+            raise
