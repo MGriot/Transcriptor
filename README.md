@@ -1,105 +1,167 @@
 # Audio Transcriptor
 
-A powerful audio transcription tool with speaker diarization capabilities, built using Python. This tool can transcribe audio files, identify different speakers, and provide detailed timestamps for each utterance.
+A comprehensive Python-based audio transcription and speaker diarization tool supporting a wide range of audio/video formats. Features both CLI and GUI interfaces for flexible usage.
 
 ## Features
 
-- **Audio Transcription**: Uses OpenAI's Whisper models for accurate speech-to-text conversion
-- **Speaker Diarization**: Identifies and separates different speakers in the audio
-- **Multiple Interface Options**: 
-  - Command Line Interface (CLI)
-  - Graphical User Interface (GUI)
-- **Voice Activity Detection (VAD)**: Multiple VAD methods supported:
-  - Silero
-  - Silero 3.1
-  - Auditok
-- **Flexible Input Handling**:
-  - Single audio file processing
-  - Batch processing of multiple files
-  - Supports multiple audio formats (.wav, .mp3, .ogg, .flac, .aac)
-- **Customizable Output**:
-  - JSON output with detailed information
-  - Clean text output with timestamps
-  - Speaker labels and custom naming
-- **Advanced Features**:
-  - Multi-language support
-  - Word alignment plotting
-  - Disfluency detection
-  - Parallel processing capabilities
+### Input Format Support
+- **Audio Formats**: `.wav`, `.mp3`, `.ogg`, `.flac`, `.aac`, `.m4a`, `.wma`, `.aif`, `.aiff`
+- **Video Formats**: `.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`, `.flv`
+- Automatic format conversion with quality preservation
+- Batch processing capabilities
+
+### Core Functionality
+- **Transcription**: OpenAI's Whisper engine with multiple model options
+- **Speaker Diarization**: pyannote.audio-based speaker separation
+- **Voice Activity Detection (VAD)**: Multiple methods including Silero and Auditok
+- **Language Support**: Auto-detection and 99+ language codes
+- **Interactive Speaker Naming**: Easy post-processing speaker identification
+- **Word-level Timestamps**: Precise timing for each transcribed word
+
+### Advanced Features
+- GPU acceleration support (CUDA)
+- Parallel processing for batch operations
+- Progress tracking and logging
+- Format conversion with quality preservation
+- Error recovery and session persistence
+
+## System Requirements
+
+### Hardware Requirements
+- **CPU**: Multi-core processor (recommended 4+ cores)
+- **RAM**: Minimum 8GB (16GB recommended)
+- **GPU**: NVIDIA GPU with CUDA support (optional, but recommended)
+- **Storage**: 2GB minimum for installation, plus space for audio files
+
+### Software Requirements
+- Python 3.8+ (3.10 recommended)
+- NVIDIA CUDA Toolkit 11.0+ (for GPU acceleration)
+- FFmpeg (required for audio/video processing)
 
 ## Installation
 
-1. Clone this repository:
+1. **System Prerequisites**:
 ```bash
-git clone https://github.com/yourusername/Transcriptor.git
-cd Transcriptor
+# Windows (using Chocolatey)
+choco install ffmpeg python3
+
+# Linux (Ubuntu/Debian)
+sudo apt-get update
+sudo apt-get install ffmpeg python3 python3-venv
 ```
 
-2. Install required packages:
+2. **Project Setup**:
 ```bash
+# Clone repository
+git clone https://github.com/yourusername/Transcriptor.git
+cd Transcriptor
+
+# Create and activate virtual environment
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# Linux/Mac
+source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-3. Set up Hugging Face API token:
-- Create an account at [Hugging Face](https://huggingface.co)
-- Get your API token from https://huggingface.co/settings/tokens
-- Either:
-  - Create a `config.json` file with your token:
-    ```json
-    {
-        "hf_token": "your_token_here"
-    }
-    ```
-  - Or provide it when running the program
+3. **Hugging Face Setup**:
+- Create account at [Hugging Face](https://huggingface.co)
+- Accept pyannote/speaker-diarization-3.1 [model terms](https://huggingface.co/pyannote/speaker-diarization-3.1)
+- Generate token at [Settings/Tokens](https://huggingface.co/settings/tokens)
+- Create `config.json`:
+```json
+{
+    "hf_token": "your_token_here"
+}
+```
 
 ## Usage
 
-### Using the GUI
+### GUI Interface
 
-Run the graphical interface:
+Launch with:
 ```bash
-python audio_transcriber_gui.py
+python gui.py
 ```
 
-The GUI provides easy access to all features through a user-friendly interface.
+Features:
+1. **File Management**:
+   - Single/Multiple file selection
+   - Drag-and-drop support
+   - Output directory management
 
-### Using the CLI
+2. **Transcription Settings**:
+   - Model selection (tiny to large)
+   - Language configuration
+   - Speaker count limits
+   - VAD method selection
 
-Basic usage:
+3. **Processing Controls**:
+   - Start/Stop functionality
+   - Progress monitoring
+   - Real-time logging
+
+4. **Speaker Management**:
+   - Interactive speaker naming
+   - Batch speaker updates
+   - Name template support
+
+### CLI Interface
+
+1. **Basic Usage**:
 ```bash
 python cli.py path/to/audio_file
 ```
 
-Advanced usage with options:
+2. **Advanced Usage**:
 ```bash
 python cli.py path/to/audio_file \
-  --output_dir output \
-  --whisper_model base \
-  --language en \
-  --use_vad \
-  --vad_method silero \
+  --output-dir "output" \
+  --whisper-model "base" \
+  --language "en" \
+  --min-speakers 2 \
+  --max-speakers 4 \
+  --use-vad \
+  --vad-method "silero" \
   --verbose
 ```
 
-### Command Line Arguments
+3. **Batch Processing**:
+```bash
+python cli.py path/to/directory \
+  --output-dir "batch_output" \
+  --num-processes 4
+```
 
-- `audio_input`: Path to audio file or directory
-- `--output_dir`: Output directory (default: "output")
-- `--hf_token`: Hugging Face API token
-- `--skip_diarization`: Skip speaker diarization
-- `--whisper_model`: Choose model size (tiny/base/small/medium/large)
-- `--language`: Specify language code (e.g., en, fr, es)
-- `--min_speakers`: Minimum number of speakers
-- `--max_speakers`: Maximum number of speakers
-- `--use_vad`: Enable Voice Activity Detection
-- `--vad_method`: Choose VAD method
-- `--verbose`: Enable verbose output
-- `--plot_word_alignment`: Enable word alignment plotting
-- `--detect_disfluencies`: Enable disfluency detection
-- `--no_rename_speakers`: Disable interactive speaker renaming
-- `--num_processes`: Number of processes for parallel processing
+### Python API Usage
 
-## Output Files
+```python
+from audio_transcriber import AudioTranscriber
+
+# Basic usage
+transcriber = AudioTranscriber(
+    audio_file="input.mp3",
+    output_dir="output",
+    hf_token="your_token"
+)
+
+# Process with advanced options
+transcriber.process_audio(
+    language="en",
+    min_speakers=2,
+    max_speakers=4,
+    use_vad=True,
+    vad_method="silero",
+    num_processes=4
+)
+```
+
+## Output Structure
 
 The tool generates several output files in your specified output directory:
 
@@ -120,13 +182,14 @@ You can create a `config.json` file to store your Hugging Face token and other d
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.8+ (3.10 recommended)
 - PyTorch
 - torchaudio
 - pyannote.audio
 - whisper_timestamped
 - pydub
 - tkinter (for GUI)
+- FFmpeg (required for audio/video processing)
 
 ## License
 

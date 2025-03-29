@@ -13,10 +13,15 @@ import tqdm
 import traceback
 from exceptions import *
 import sys
+from format_converter import (
+    convert_to_compatible_format,
+    cleanup_converted_file,
+    SUPPORTED_FORMATS,
+)
 
 # Constants for default values
 DEFAULT_OUTPUT_DIR = "output"
-AUDIO_FILE_EXTENSIONS = (".wav", ".mp3", ".ogg", ".flac", ".aac")
+AUDIO_FILE_EXTENSIONS = SUPPORTED_FORMATS["audio"] + SUPPORTED_FORMATS["video"]
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
 VAD_METHODS = ["silero", "silero:3.1", "auditok"]
 DEFAULT_NUM_PROCESSES = 1
@@ -59,7 +64,8 @@ class AudioTranscriber:
         skip_diarization: bool = False,
         whisper_model: str = "base",
     ):
-        self.audio_file = audio_file
+        self.original_file = audio_file
+        self.audio_file = None  # Will store converted file path
         self.audio_base_name = os.path.splitext(os.path.basename(audio_file))[0]
         self.output_dir_base = output_dir
         self.output_dir = os.path.join(output_dir, self.audio_base_name)
@@ -259,6 +265,9 @@ class AudioTranscriber:
     ):
         """Orchestrates the audio processing pipeline."""
         try:
+            # Convert file if needed
+            self.audio_file = convert_to_compatible_format(self.original_file)
+
             if self.skip_diarization:
                 print("Transcribing whole audio file...")
                 whole_transcription, detected_language = self.transcribe_chunk(
@@ -299,6 +308,10 @@ class AudioTranscriber:
                 except OSError:
                     pass
             raise TranscriptionError(f"Audio processing failed: {str(e)}")
+        finally:
+            # Clean up converted file if it was created
+            if self.audio_file != self.original_file:
+                cleanup_converted_file(self.audio_file)
 
     def _save_speaker_names(self, speaker_names: Dict[str, str]):
         """Save speaker names to JSON file."""

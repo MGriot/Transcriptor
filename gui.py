@@ -8,9 +8,11 @@ import threading
 import os
 import logging
 from audio_transcriber import (
-    AudioTranscriber,  # Changed from process_single_audio
+    AudioTranscriber,
+    SpeakerRenamer,  # Add this import
     DEFAULT_OUTPUT_DIR,
     AUDIO_FILE_EXTENSIONS,
+    WHISPER_MODELS,
     VAD_METHODS,
 )
 from exceptions import *
@@ -23,6 +25,165 @@ from validation import (
 from logging_config import setup_logging
 from log_handler import ThreadSafeLogger, QueueHandler
 import tkinter.messagebox as tk_messagebox
+from cli import find_transcription_files  # Add this import
+
+
+class SpeakerRenamingPage(ttk.Frame):
+    def __init__(self, parent, app):  # Add app parameter
+        super().__init__(parent)
+        self.parent = parent
+        self.app = app  # Store reference to main application
+        self.setup_ui()
+        self.logger = ThreadSafeLogger().get_logger()
+
+    def setup_ui(self):
+        # Output Directory Selection
+        dir_frame = ttk.LabelFrame(self, text="Output Directory")
+        dir_frame.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+
+        self.output_dir = tk.StringVar(value=DEFAULT_OUTPUT_DIR)
+        ttk.Entry(dir_frame, textvariable=self.output_dir, width=50).grid(
+            row=0, column=0, padx=5, sticky="ew"
+        )
+        ttk.Button(dir_frame, text="Browse", command=self.browse_output).grid(
+            row=0, column=1, padx=5
+        )
+
+        # Transcriptions List
+        list_frame = ttk.LabelFrame(self, text="Available Transcriptions")
+        list_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+
+        self.transcriptions_list = tk.Listbox(list_frame, height=6)
+        self.transcriptions_list.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        self.transcriptions_list.bind("<<ListboxSelect>>", self.on_transcription_select)
+
+        list_scroll = ttk.Scrollbar(
+            list_frame, orient="vertical", command=self.transcriptions_list.yview
+        )
+        list_scroll.grid(row=0, column=1, sticky="ns")
+        self.transcriptions_list.configure(yscrollcommand=list_scroll.set)
+
+        # Refresh Button
+        ttk.Button(
+            list_frame, text="Refresh List", command=self.refresh_transcriptions
+        ).grid(row=1, column=0, columnspan=2, pady=5)
+
+        # Speaker Names Frame
+        self.speakers_frame = ttk.LabelFrame(self, text="Speaker Names")
+        self.speakers_frame.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+
+        # Buttons Frame
+        btn_frame = ttk.Frame(self)
+        btn_frame.grid(row=3, column=0, padx=10, pady=5)
+
+        self.save_btn = ttk.Button(
+            btn_frame, text="Save Changes", command=self.save_changes, state="disabled"
+        )
+        self.save_btn.grid(row=0, column=0, padx=5)
+
+        ttk.Button(btn_frame, text="Return to Main", command=self.return_to_main).grid(
+            row=0, column=1, padx=5
+        )
+
+        # Configure grid weights
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
+
+        # Initialize
+        self.current_renamer = None
+        self.speaker_entries = {}
+        self.refresh_transcriptions()
+
+    def browse_output(self):
+        path = filedialog.askdirectory(title="Select Output Directory")
+        if path:
+            self.output_dir.set(path)
+            self.refresh_transcriptions()
+
+    def refresh_transcriptions(self):
+        self.transcriptions_list.delete(0, tk.END)
+        transcriptions = find_transcription_files(self.output_dir.get())
+
+        for i, (name, subdir, _) in enumerate(transcriptions):
+            display_path = os.path.join(subdir, name) if subdir else name
+            self.transcriptions_list.insert(tk.END, display_path)
+            self.transcriptions_list.itemconfig(
+                i, {"bg": "white" if i % 2 == 0 else "#f0f0f0"}
+            )
+
+    def clear_speakers_frame(self):
+        for widget in self.speakers_frame.winfo_children():
+            widget.destroy()
+        self.speaker_entries.clear()
+
+    def on_transcription_select(self, event):
+        selection = self.transcriptions_list.curselection()
+        if not selection:
+            return
+
+        transcriptions = find_transcription_files(self.output_dir.get())
+        if not transcriptions:
+            return
+
+        idx = selection[0]
+        if idx >= len(transcriptions):
+            return
+
+        try:
+            audio_name, _, actual_output_dir = transcriptions[idx]
+            from audio_transcriber import SpeakerRenamer  # Ensure import is available
+
+            self.current_renamer = SpeakerRenamer(audio_name, actual_output_dir)
+            self.show_speaker_names()
+        except Exception as e:
+            self.logger.error(f"Error loading speaker names: {str(e)}", exc_info=True)
+            tk_messagebox.showerror("Error", f"Failed to load speaker names: {str(e)}")
+
+    def show_speaker_names(self):
+        self.clear_speakers_frame()
+        if not self.current_renamer or not self.current_renamer.speaker_names:
+            ttk.Label(self.speakers_frame, text="No speaker names found").grid(pady=10)
+            self.save_btn.config(state="disabled")
+            return
+
+        # Create entries for each speaker
+        for i, (label, name) in enumerate(self.current_renamer.speaker_names.items()):
+            ttk.Label(self.speakers_frame, text=f"Speaker {label}:").grid(
+                row=i, column=0, padx=5, pady=2, sticky="e"
+            )
+            entry = ttk.Entry(self.speakers_frame, width=30)
+            entry.insert(0, name)
+            entry.grid(row=i, column=1, padx=5, pady=2, sticky="w")
+            self.speaker_entries[label] = entry
+
+        self.save_btn.config(state="normal")
+
+    def save_changes(self):
+        if not self.current_renamer:
+            return
+
+        try:
+            # Update speaker names
+            new_names = {
+                label: entry.get().strip()
+                for label, entry in self.speaker_entries.items()
+            }
+            self.current_renamer.speaker_names = new_names
+            self.current_renamer._save_speaker_names()
+
+            # Generate updated transcriptions
+            json_path, txt_path = self.current_renamer.generate_updated_transcriptions()
+
+            tk_messagebox.showinfo(
+                "Success",
+                f"Speaker names updated successfully.\nNew files created:\n{json_path}\n{txt_path}",
+            )
+        except Exception as e:
+            tk_messagebox.showerror("Error", f"Failed to save changes: {str(e)}")
+
+    def return_to_main(self):
+        self.app.show_main_page()  # Use app reference instead of parent
 
 
 class Application(tk.Tk):
@@ -30,20 +191,77 @@ class Application(tk.Tk):
         super().__init__()
         self.title("Audio Transcriber GUI")
 
-        # Initialize logging
+        # Initialize logging first
         self.logger = ThreadSafeLogger().get_logger()
         self.log_queue = ThreadSafeLogger().get_queue()
         self.queue_handler = ThreadSafeLogger()._instance.queue_handler
+        self.processing = False  # Add processing flag initialization
+        self.running = True  # Add running flag
 
-        # GUI Setup
+        # Create container for pages
+        self.container = ttk.Frame(self)
+        self.container.pack(side="top", fill="both", expand=True)
+
+        # Initialize pages
+        self.main_page = None
+        self.renaming_page = None
+        self.setup_pages()
+
+        # Show main page initially
+        self.show_main_page()
+
+        # Set up closing protocol
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def setup_pages(self):
+        self.main_page = MainPage(self.container, self)  # Pass self as app reference
+        self.renaming_page = SpeakerRenamingPage(
+            self.container, self
+        )  # Pass self as app reference
+
+    def show_main_page(self):
+        self.renaming_page.pack_forget()
+        self.main_page.pack(fill="both", expand=True)
+
+    def show_renaming_page(self):
+        self.main_page.pack_forget()
+        self.renaming_page.pack(fill="both", expand=True)
+        self.renaming_page.refresh_transcriptions()
+
+    def on_closing(self):
+        """Handle application closing"""
+        if self.processing and not tk_messagebox.askyesno(
+            "Confirm Exit", "Processing is active. Do you want to quit anyway?"
+        ):
+            return
+
+        self.running = False
+        if hasattr(self.main_page, "log_thread"):
+            self.main_page.running = False
+            self.main_page.log_thread.join(timeout=1.0)
+        self.quit()
+        self.destroy()
+
+
+class MainPage(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.parent = parent
+        self.app = app
+        # Initialize logging and processing flag
+        self.logger = ThreadSafeLogger().get_logger()
+        self.log_queue = ThreadSafeLogger().get_queue()
+        self.queue_handler = ThreadSafeLogger()._instance.queue_handler
+        self.processing = False
+        self.running = True
+
+        # Initialize GUI
         self.setup_gui()
+        self.add_renaming_button()
 
         # Start log consumer thread
-        self.running = True
         self.log_thread = threading.Thread(target=self.consume_logs, daemon=True)
         self.log_thread.start()
-
-        self.processing = False  # Add flag for processing state
 
     def setup_gui(self):
         # Input Section
@@ -143,13 +361,6 @@ class Application(tk.Tk):
             options_frame, text="Detect Disfluencies", variable=self.detect_disfluencies
         ).grid(row=0, column=2, sticky="w")
 
-        self.no_rename_speakers = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            options_frame,
-            text="Disable Speaker Renaming",
-            variable=self.no_rename_speakers,
-        ).grid(row=1, column=0, sticky="w")
-
         # Add Process Controls frame
         process_frame = ttk.LabelFrame(self, text="Processing Controls")
         process_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
@@ -184,6 +395,14 @@ class Application(tk.Tk):
         # Configure grid weights
         self.grid_rowconfigure(4, weight=1)
         self.grid_columnconfigure(0, weight=1)
+
+    def add_renaming_button(self):
+        renaming_btn = ttk.Button(
+            self,
+            text="Speaker Name Editor",
+            command=self.app.show_renaming_page,
+        )
+        renaming_btn.grid(row=5, column=0, padx=10, pady=5, sticky="ew")
 
     def setup_progress_bar(self):
         """Setup progress bar widget"""
@@ -236,7 +455,7 @@ class Application(tk.Tk):
                 raise ConfigurationError("Please select an input file or directory")
 
             if not self.skip_diarization.get() and not self.hf_token.get():
-                if not tk_messagebox.askyesno(
+                if not tk.messagebox.askyesno(
                     "Missing Token",
                     "No Hugging Face token provided. This will disable speaker diarization. Continue?",
                 ):
@@ -271,7 +490,7 @@ class Application(tk.Tk):
         if not self.processing:
             return
 
-        if tk_messagebox.askyesno("Confirm", "Stop current processing?"):
+        if tk.messagebox.askyesno("Confirm", "Stop current processing?"):
             self.processing = False
             self.logger.info("Stopping processing...")
             self.update_buttons_state()
@@ -299,7 +518,7 @@ class Application(tk.Tk):
                         self.progress_var.set((i / total_files) * 100)
                     except Exception as e:
                         self.logger.error(f"Error processing {file}: {str(e)}")
-                        if not tk_messagebox.askyesno(
+                        if not tk.messagebox.askyesno(
                             "Error",
                             f"Error processing {file}. Continue with remaining files?",
                         ):
@@ -465,5 +684,4 @@ class Application(tk.Tk):
 
 if __name__ == "__main__":
     app = Application()
-    app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()

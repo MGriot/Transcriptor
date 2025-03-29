@@ -1,11 +1,33 @@
+# Core Dependencies
 torch>=2.0.0
 torchaudio>=2.0.0
-pyannote.audio>=3.1.0
-faster-whisper>=0.9.0
 numpy>=1.24.0
+
+# Audio Processing
+pyannote.audio>=3.1.0
+whisper-timestamped>=1.0.1
 soundfile>=0.12.1
-PyQt6>=6.4.0
+librosa>=0.10.1
+
+# Video/Audio Conversion
+moviepy==1.0.3
+pydub>=0.25.1
 ffmpeg-python>=0.2.0
+imageio-ffmpeg>=0.4.8
+
+# GUI and Progress
+tkinter  # Usually comes with Python
+tqdm>=4.65.0
+
+# Utilities
 typing>=3.7.4
 json5>=0.9.14
-tqdm>=4.65.0
+decorator>=4.4.2
+proglog>=0.1.10
+requests>=2.31.0
+setuptools>=65.5.1
+wheel>=0.38.4
+
+# Optional but recommended
+cuda-python>=12.2  # For NVIDIA GPU support
+numba>=0.57.1     # For performance optimization
