@@ -7,6 +7,7 @@ import sys
 import threading
 import os
 import logging
+import json
 from audio_transcriber import (
     AudioTranscriber,
     SpeakerRenamer,  # Add this import
@@ -248,6 +249,7 @@ class MainPage(ttk.Frame):
         super().__init__(parent)
         self.parent = parent
         self.app = app
+        self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
         # Initialize logging and processing flag
         self.logger = ThreadSafeLogger().get_logger()
         self.log_queue = ThreadSafeLogger().get_queue()
@@ -301,6 +303,16 @@ class MainPage(ttk.Frame):
         )
         self.hf_token = ttk.Entry(params_frame, width=50)
         self.hf_token.grid(row=0, column=1, columnspan=2, sticky="ew")
+
+        # Load token from config if exists
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, "r") as f:
+                    config = json.load(f)
+                    if "hf_token" in config:
+                        self.hf_token.insert(0, config["hf_token"])
+        except Exception as e:
+            self.logger.warning(f"Could not load config file: {e}")
 
         # Diarization Options
         self.skip_diarization = tk.BooleanVar()
@@ -580,7 +592,6 @@ class MainPage(ttk.Frame):
                 "verbose": self.verbose.get(),
                 "plot_word_alignment": self.plot_word_alignment.get(),
                 "detect_disfluencies": self.detect_disfluencies.get(),
-                "no_rename_speakers": self.no_rename_speakers.get(),
             }
         except ValueError as e:
             raise ConfigurationError(f"Invalid parameter value: {str(e)}")
@@ -628,7 +639,6 @@ class MainPage(ttk.Frame):
                 verbose=params["verbose"],
                 plot_word_alignment=params["plot_word_alignment"],
                 detect_disfluencies=params["detect_disfluencies"],
-                no_rename_speakers=params["no_rename_speakers"],
                 num_processes=1,  # Always use 1 process for GUI operations
             )
 
